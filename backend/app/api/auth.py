@@ -10,7 +10,6 @@ from app.models.user import User
 from app.schemas.auth import TokenResponse, UserOut
 
 router = APIRouter(prefix="/auth", tags=["auth"])
-settings = get_settings()
 
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -21,6 +20,8 @@ SCOPES = [
     "email",
     "profile",
     "https://www.googleapis.com/auth/calendar",
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/drive.readonly",
 ]
 
 
@@ -31,6 +32,7 @@ async def google_login(passphrase: str = Query(...)):
     import base64
     import json
 
+    settings = get_settings()
     # Validate passphrase before redirecting
     if passphrase != settings.invite_passphrase:
         raise HTTPException(status_code=403, detail="Invalid invite passphrase")
@@ -67,6 +69,7 @@ async def google_callback(
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid state parameter")
 
+    settings = get_settings()
     if passphrase != settings.invite_passphrase:
         raise HTTPException(status_code=403, detail="Invalid invite passphrase")
 

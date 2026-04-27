@@ -1,47 +1,52 @@
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 
-export function useVoiceInput({ onTranscript, onAudioChunk }) {
+export function useVoiceInput({ onTranscript, onAudioChunk, autoStart }) {
   const [listening, setListening] = useState(false)
-  const [supported, setSupported] = useState(
-    typeof window !== 'undefined' && 'webkitSpeechRecognition' in window || 'SpeechRecognition' in window
+  const [supported] = useState(
+    typeof window !== 'undefined' &&
+    ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window)
   )
 
   const recognitionRef = useRef(null)
-  const mediaRecorderRef = useRef(null)
+  const autoStartRef = useRef(autoStart)
+
+  useEffect(() => {
+    autoStartRef.current = autoStart
+  }, [autoStart])
 
   const startListening = useCallback(() => {
-    if (listening) return
+    if (listening || !supported) return
 
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
-    if (!SpeechRecognition) {
-      setSupported(false)
-      return
-    }
-
     const recognition = new SpeechRecognition()
     recognition.continuous = false
     recognition.interimResults = false
     recognition.lang = 'en-US'
 
     recognition.onresult = (event) => {
-      const transcript = event.results[0][0].transcript
-      if (transcript && onTranscript) {
+      const result = event.results[0][0]
+      const transcript = result.transcript?.trim()
+      const confidence = result.confidence ?? 1
+      // Ignore low-confidence results (ambient noise) and very short fragments
+      if (transcript && transcript.length > 2 && confidence > 0.55 && onTranscript) {
         onTranscript(transcript)
       }
     }
 
     recognition.onend = () => {
       setListening(false)
+      recognitionRef.current = null
     }
 
     recognition.onerror = () => {
       setListening(false)
+      recognitionRef.current = null
     }
 
     recognition.start()
     recognitionRef.current = recognition
     setListening(true)
-  }, [listening, onTranscript])
+  }, [listening, supported, onTranscript])
 
   const stopListening = useCallback(() => {
     if (recognitionRef.current) {

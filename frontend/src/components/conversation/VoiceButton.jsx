@@ -1,23 +1,46 @@
+import { forwardRef, useImperativeHandle, useCallback } from 'react'
 import { Mic, MicOff } from 'lucide-react'
 import { useVoiceInput } from '../../hooks/useVoiceInput.js'
 
-export default function VoiceButton({ onTranscript, onAudioChunk }) {
-  const { listening, supported, toggleListening } = useVoiceInput({
+const VoiceButton = forwardRef(function VoiceButton({ onTranscript, onAudioChunk, onStartListening, disabled, speaking }, ref) {
+  const { listening, supported, toggleListening, startListening, stopListening } = useVoiceInput({
     onTranscript,
     onAudioChunk,
   })
 
-  if (!supported) return null
+  const handleStart = useCallback(() => {
+    onStartListening?.()
+    startListening()
+  }, [onStartListening, startListening])
+
+  useImperativeHandle(ref, () => ({ startListening: handleStart }), [handleStart])
+
+  if (!supported) return (
+    <div className="voice-orb unsupported" title="Voice not supported in this browser">
+      <MicOff size={28} />
+      <span className="orb-label">Voice unavailable</span>
+    </div>
+  )
 
   return (
     <button
-      className={`voice-btn ${listening ? 'listening' : ''}`}
-      onClick={toggleListening}
-      aria-label={listening ? 'Stop listening' : 'Start voice input'}
+      className={`voice-orb ${listening ? 'listening' : ''} ${disabled ? 'disabled' : ''}`}
+      onClick={disabled ? undefined : (listening ? stopListening : handleStart)}
+      aria-label={listening ? 'Stop listening' : 'Tap to speak'}
       title={listening ? 'Tap to stop' : 'Tap to speak'}
+      disabled={disabled}
     >
-      {listening ? <MicOff size={20} /> : <Mic size={20} />}
-      {listening && <span className="pulse-ring" />}
+      <Mic size={28} />
+      {listening && (
+        <>
+          <span className="orb-ring ring-1" />
+          <span className="orb-ring ring-2" />
+          <span className="orb-ring ring-3" />
+        </>
+      )}
+      <span className="orb-label">{speaking ? 'POCA is speaking…' : disabled ? 'POCA is thinking…' : listening ? 'Listening…' : 'Tap to speak'}</span>
     </button>
   )
-}
+})
+
+export default VoiceButton

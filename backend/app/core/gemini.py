@@ -1,3 +1,5 @@
+import asyncio
+import base64
 import json
 from typing import Optional
 import google.generativeai as genai
@@ -38,6 +40,14 @@ When the user wants to add an event to Google Calendar, output:
 When the user wants a web search, output:
 <web_search>{"query": "..."}</web_search>
 
+When the user asks you to search their Gmail or emails, output:
+<gmail_search>{"query": "..."}</gmail_search>
+
+When the user asks you to search their Google Drive files or documents, output:
+<drive_search>{"query": "..."}</drive_search>
+
+For Gmail and Drive searches: emit the directive, the backend will execute the search and return results to you. Do not make up results.
+
 ## Safety Guardrails
 - Do NOT engage with, generate, or facilitate profanity, illegal activities, graphic violence, or sexual/romantic scenarios
 - If the user expresses frustration or anger, gently de-escalate: "It sounds like you're really frustrated — let's take a step back."
@@ -49,6 +59,8 @@ When the user wants a web search, output:
 - You have access to the user's conversation history and loaded context documents
 - Draw on this knowledge naturally — like a colleague who knows your projects
 - Do not recite history unprompted; reference it when relevant
+- At session start you receive the last 14 days of emails as context — reference them when relevant
+- For older emails, use <gmail_search> to fetch them on demand when the user asks
 
 ## Identity
 - You are an AI assistant. Be transparent about this when asked.
@@ -78,8 +90,14 @@ def build_session_context(
     memory_snippets: list,
     is_first_session_of_week: bool = False,
     weekly_accomplishments: Optional[list] = None,
+    current_datetime: Optional[str] = None,
+    upcoming_events: Optional[list] = None,
+    recent_emails: Optional[list] = None,
 ) -> str:
     parts = []
+
+    if current_datetime:
+        parts.append(f"## Current Date & Time\n{current_datetime}")
 
     if is_first_session_of_week and weekly_accomplishments:
         accomplishments_str = "\n".join(f"- {a}" for a in weekly_accomplishments)
@@ -98,8 +116,77 @@ def build_session_context(
         if docs_str:
             parts.append(f"## Loaded Context Documents\n{docs_str}")
 
+    if upcoming_events:
+        events_str = "\n".join(f"- {e['title']}: {e['start']}" for e in upcoming_events)
+        parts.append(f"## Upcoming Calendar Events (Next 30 Days)\n{events_str}")
+
+    if recent_emails:
+        emails_str = "\n".join(
+            f"- [{e['date'][:16]}] {e['from'][:40]} | {e['subject'][:60]}"
+            for e in recent_emails
+        )
+        parts.append(
+            f"## Recent Emails (Last 14 Days — {len(recent_emails)} messages)\n"
+            f"(User can ask you to search older emails or for details.)\n"
+            f"{emails_str}"
+        )
+
     if memory_snippets:
         memory_str = "\n".join(f"- {s}" for s in memory_snippets)
         parts.append(f"## Relevant Past Context\n{memory_str}")
 
     return "\n\n".join(parts)
+
+
+def _synthesize_speech_sync(text: str, voice: str = "Aoede") -> tuple[bytes, str] | None:
+    """
+    Generate speech audio from text using Gemini TTS.
+    Returns (audio_bytes, mime_type) or None on failure.
+    """
+    try:
+        from google import genai as genai_new
+        from google.genai import types as gt
+
+        client = genai_new.Client(api_key=get_settings().gemini_api_key)
+        response = client.models.generate_content(
+            model="gemini-2.5-flash-preview-tts",
+            contents=text,
+            config=gt.GenerateContentConfig(
+                response_modalities=["AUDIO"],
+                speech_config=gt.SpeechConfig(
+                    voice_config=gt.VoiceConfig(
+                        prebuilt_voice_config=gt.PrebuiltVoiceConfig(voice_name=voice)
+                    )
+                ),
+            ),
+        )
+        part = response.candidates[0].content.parts[0]
+        audio_bytes = part.inline_data.data
+        mime_type = part.inline_data.mime_type or "audio/wav"
+
+        # Gemini returns raw PCM (audio/L16) — wrap it in a WAV container
+        # so browsers can play it via HTMLAudioElement
+        if "pcm" in mime_type.lower() or mime_type.startswith("audio/L16"):
+            import io, wave, re
+            rate = 24000
+            m = re.search(r"rate=(\d+)", mime_type)
+            if m:
+                rate = int(m.group(1))
+            buf = io.BytesIO()
+            with wave.open(buf, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)   # 16-bit
+                wf.setframerate(rate)
+                wf.writeframes(audio_bytes)
+            audio_bytes = buf.getvalue()
+            mime_type = "audio/wav"
+
+        return audio_bytes, mime_type
+    except Exception as e:
+        print(f"[TTS] Error: {e}")
+        return None
+
+
+async def synthesize_speech(text: str, voice: str = "Aoede") -> tuple[bytes, str] | None:
+    """Async wrapper for Gemini TTS synthesis."""
+    return await asyncio.to_thread(_synthesize_speech_sync, text, voice)
