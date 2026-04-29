@@ -12,7 +12,8 @@ class Settings(BaseSettings):
 
     # Gemini
     gemini_api_key: str = ""
-    gemini_model: str = "gemini-2.5-flash-preview-native-audio-dialog"
+    gemini_model: str = "gemini-2.0-flash-live-001"
+    gemini_live_model: str = "gemini-2.0-flash-live-001"
 
     # Security
     jwt_secret: str = "change-me-in-production"

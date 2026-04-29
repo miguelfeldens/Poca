@@ -135,8 +135,10 @@ export function useGeminiLive() {
           break
         case 'text':
           setPocaTyping(false)
-          // Show both assistant responses and user speech transcripts
           if (msg.role === 'assistant' || msg.role === 'user') addMessage(msg.role, msg.data)
+          break
+        case 'turn_complete':
+          setPocaTyping(false)
           break
         case 'audio_response':
           playAudio(msg.data)

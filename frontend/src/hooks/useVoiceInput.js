@@ -38,28 +38,29 @@ export function useVoiceInput({ onChunk, onEnd }) {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
       streamRef.current = stream
 
-      // Create a 16kHz AudioContext — the browser resamples the mic's native rate for us
       const ctx = new AudioContext({ sampleRate: 16000 })
       inputCtxRef.current = ctx
-
-      await ctx.audioWorklet.addModule('/pcm-processor.js')
 
       const source = ctx.createMediaStreamSource(stream)
       sourceRef.current = source
 
-      const worklet = new AudioWorkletNode(ctx, 'pcm-processor')
-      workletRef.current = worklet
+      // ScriptProcessorNode captures PCM16 without requiring module loading
+      const processor = ctx.createScriptProcessor(2048, 1, 1)
+      workletRef.current = processor
 
-      // Collect raw Int16 chunks from the worklet
-      worklet.port.onmessage = (e) => {
-        batchRef.current.push(new Int16Array(e.data))
+      processor.onaudioprocess = (e) => {
+        const input = e.inputBuffer.getChannelData(0)
+        const pcm16 = new Int16Array(input.length)
+        for (let i = 0; i < input.length; i++) {
+          const s = Math.max(-1, Math.min(1, input[i]))
+          pcm16[i] = s < 0 ? s * 32768 : s * 32767
+        }
+        batchRef.current.push(pcm16)
       }
 
-      // Connect graph: mic → worklet → destination (worklet outputs silence, no feedback)
-      source.connect(worklet)
-      worklet.connect(ctx.destination)
+      source.connect(processor)
+      processor.connect(ctx.destination)
 
-      // Send batched audio every 100ms
       intervalRef.current = setInterval(() => flushBatch(onChunk), BATCH_INTERVAL_MS)
 
       setListening(true)
@@ -80,7 +81,6 @@ export function useVoiceInput({ onChunk, onEnd }) {
 
     try { sourceRef.current?.disconnect() } catch {}
     try { workletRef.current?.disconnect() } catch {}
-    try { workletRef.current?.port.close() } catch {}
     streamRef.current?.getTracks().forEach(t => t.stop())
     inputCtxRef.current?.close()
 

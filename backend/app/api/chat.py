@@ -362,7 +362,9 @@ async def chat_websocket(
             from google import genai as genai_live
             from google.genai import types as gt
 
-            client = genai_live.Client(api_key=settings.gemini_api_key)
+            client = genai_live.Client(
+                api_key=settings.gemini_api_key,
+            )
 
             live_config = gt.LiveConnectConfig(
                 response_modalities=["AUDIO"],
@@ -378,7 +380,7 @@ async def chat_websocket(
             )
 
             async with client.aio.live.connect(
-                model=settings.gemini_model,
+                model="gemini-2.5-flash-native-audio-latest",
                 config=live_config,
             ) as live:
                 # Kick off the session opening sequence
@@ -433,12 +435,15 @@ async def _frontend_to_live(websocket: WebSocket, live) -> None:
                 pcm_bytes = base64.b64decode(msg.get("data", ""))
                 if pcm_bytes:
                     await live.send(
-                        input=gt.Blob(data=pcm_bytes, mime_type="audio/pcm;rate=16000")
+                        input=gt.LiveClientRealtimeInput(
+                            audio=gt.Blob(data=pcm_bytes, mime_type="audio/pcm;rate=16000")
+                        )
                     )
 
             elif msg_type == "audio_end":
-                # Signal end of user speech turn so Gemini knows to respond
-                await live.send(input="", end_of_turn=True)
+                await live.send(
+                    input=gt.LiveClientRealtimeInput(activity_end=gt.ActivityEnd())
+                )
 
             elif msg_type == "text":
                 user_text = msg.get("data", "").strip()
@@ -468,8 +473,9 @@ async def _live_to_frontend(
     accumulated_output_text = ""
 
     try:
-        async for response in live.receive():
-            sc = response.server_content
+        while True:
+            async for response in live.receive():
+                sc = response.server_content
 
             if sc:
                 # Streaming audio chunks from POCA
@@ -484,29 +490,32 @@ async def _live_to_frontend(
                             })
 
                 # POCA's spoken words as text (output transcription)
-                if sc.output_audio_transcription:
-                    text = getattr(sc.output_audio_transcription, "text", "") or ""
+                if sc.output_transcription:
+                    text = getattr(sc.output_transcription, "text", "") or ""
                     if text:
                         accumulated_output_text += text
 
                 # User's spoken words as text (input transcription)
-                if sc.input_audio_transcription:
-                    user_text = getattr(sc.input_audio_transcription, "text", "") or ""
+                if sc.input_transcription:
+                    user_text = getattr(sc.input_transcription, "text", "") or ""
                     if user_text:
                         await websocket.send_json({"type": "text", "data": user_text, "role": "user"})
                         await store_message(db, session_id, user_id, "user", user_text)
                         await db.commit()
 
                 # Turn complete — flush accumulated transcript to frontend
-                if sc.turn_complete and accumulated_output_text:
-                    await websocket.send_json({
-                        "type": "text",
-                        "data": accumulated_output_text,
-                        "role": "assistant",
-                    })
-                    await store_message(db, session_id, user_id, "assistant", accumulated_output_text)
-                    await db.commit()
-                    accumulated_output_text = ""
+                if sc.turn_complete:
+                    if accumulated_output_text:
+                        await websocket.send_json({
+                            "type": "text",
+                            "data": accumulated_output_text,
+                            "role": "assistant",
+                        })
+                        await store_message(db, session_id, user_id, "assistant", accumulated_output_text)
+                        await db.commit()
+                        accumulated_output_text = ""
+                    # Always signal turn end so frontend clears the typing/thinking state
+                    await websocket.send_json({"type": "turn_complete"})
 
             # Function calls (directives)
             if response.tool_call:
