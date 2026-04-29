@@ -1,65 +1,112 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 
-export function useVoiceInput({ onTranscript, onAudioChunk, autoStart }) {
+const BATCH_INTERVAL_MS = 100  // send audio in ~100ms batches
+
+export function useVoiceInput({ onChunk, onEnd }) {
   const [listening, setListening] = useState(false)
   const [supported] = useState(
-    typeof window !== 'undefined' &&
-    ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window)
+    typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getUserMedia
   )
 
-  const recognitionRef = useRef(null)
-  const autoStartRef = useRef(autoStart)
+  const inputCtxRef = useRef(null)
+  const streamRef = useRef(null)
+  const workletRef = useRef(null)
+  const sourceRef = useRef(null)
+  const batchRef = useRef([])    // accumulated Int16Array chunks between flushes
+  const intervalRef = useRef(null)
 
-  useEffect(() => {
-    autoStartRef.current = autoStart
-  }, [autoStart])
+  const flushBatch = useCallback((callback) => {
+    const chunks = batchRef.current
+    if (chunks.length === 0) return
+    batchRef.current = []
 
-  const startListening = useCallback(() => {
-    if (listening || !supported) return
+    const totalLen = chunks.reduce((s, c) => s + c.length, 0)
+    const combined = new Int16Array(totalLen)
+    let offset = 0
+    for (const c of chunks) { combined.set(c, offset); offset += c.length }
 
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
-    const recognition = new SpeechRecognition()
-    recognition.continuous = false
-    recognition.interimResults = false
-    recognition.lang = 'en-US'
+    // Convert to base64
+    const bytes = new Uint8Array(combined.buffer)
+    let binary = ''
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
+    callback?.(btoa(binary))
+  }, [])
 
-    recognition.onresult = (event) => {
-      const result = event.results[0][0]
-      const transcript = result.transcript?.trim()
-      const confidence = result.confidence ?? 1
-      // Ignore low-confidence results (ambient noise) and very short fragments
-      if (transcript && transcript.length > 2 && confidence > 0.55 && onTranscript) {
-        onTranscript(transcript)
+  const startListening = useCallback(async () => {
+    if (listening) return
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+      streamRef.current = stream
+
+      // Create a 16kHz AudioContext — the browser resamples the mic's native rate for us
+      const ctx = new AudioContext({ sampleRate: 16000 })
+      inputCtxRef.current = ctx
+
+      await ctx.audioWorklet.addModule('/pcm-processor.js')
+
+      const source = ctx.createMediaStreamSource(stream)
+      sourceRef.current = source
+
+      const worklet = new AudioWorkletNode(ctx, 'pcm-processor')
+      workletRef.current = worklet
+
+      // Collect raw Int16 chunks from the worklet
+      worklet.port.onmessage = (e) => {
+        batchRef.current.push(new Int16Array(e.data))
       }
-    }
 
-    recognition.onend = () => {
-      setListening(false)
-      recognitionRef.current = null
-    }
+      // Connect graph: mic → worklet → destination (worklet outputs silence, no feedback)
+      source.connect(worklet)
+      worklet.connect(ctx.destination)
 
-    recognition.onerror = () => {
-      setListening(false)
-      recognitionRef.current = null
-    }
+      // Send batched audio every 100ms
+      intervalRef.current = setInterval(() => flushBatch(onChunk), BATCH_INTERVAL_MS)
 
-    recognition.start()
-    recognitionRef.current = recognition
-    setListening(true)
-  }, [listening, supported, onTranscript])
+      setListening(true)
+    } catch (err) {
+      console.error('[voice] Failed to start:', err)
+    }
+  }, [listening, onChunk, flushBatch])
 
   const stopListening = useCallback(() => {
-    if (recognitionRef.current) {
-      recognitionRef.current.stop()
-      recognitionRef.current = null
-    }
+    if (!listening) return
+
+    clearInterval(intervalRef.current)
+    intervalRef.current = null
+
+    // Flush any remaining audio before signaling end
+    flushBatch(onChunk)
+    batchRef.current = []
+
+    try { sourceRef.current?.disconnect() } catch {}
+    try { workletRef.current?.disconnect() } catch {}
+    try { workletRef.current?.port.close() } catch {}
+    streamRef.current?.getTracks().forEach(t => t.stop())
+    inputCtxRef.current?.close()
+
+    inputCtxRef.current = null
+    streamRef.current = null
+    workletRef.current = null
+    sourceRef.current = null
+
     setListening(false)
-  }, [])
+    onEnd?.()
+  }, [listening, onChunk, onEnd, flushBatch])
 
   const toggleListening = useCallback(() => {
     if (listening) stopListening()
     else startListening()
   }, [listening, startListening, stopListening])
+
+  useEffect(() => {
+    return () => {
+      clearInterval(intervalRef.current)
+      try { sourceRef.current?.disconnect() } catch {}
+      try { workletRef.current?.disconnect() } catch {}
+      streamRef.current?.getTracks().forEach(t => t.stop())
+      inputCtxRef.current?.close()
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   return { listening, supported, toggleListening, startListening, stopListening }
 }

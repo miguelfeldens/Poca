@@ -1,13 +1,8 @@
 import asyncio
-import base64
-import json
 from typing import Optional
-import google.generativeai as genai
 from app.core.config import get_settings
 
 settings = get_settings()
-
-genai.configure(api_key=settings.gemini_api_key)
 
 POCA_SYSTEM_PROMPT = """You are POCA — Personal Organization and Cheeky Aid. You are a warm, encouraging mentor and personal productivity companion.
 
@@ -20,33 +15,21 @@ POCA_SYSTEM_PROMPT = """You are POCA — Personal Organization and Cheeky Aid. Y
 
 ## Your Core Functions
 1. **Proactive task awareness**: You know the user's deadlines, priorities, and open action items. Reference them naturally.
-2. **Task extraction**: When the user mentions dates, deadlines, appointments, or soft commitments, capture them. For items with partial info, ask clarifying questions before saving.
-3. **Google Calendar**: When a confirmed date/time event is identified, offer to add it to the user's Google Calendar. Wait for explicit confirmation before any write.
+2. **Task extraction**: When the user mentions dates, deadlines, appointments, or soft commitments, call extract_task(). For items with partial info, ask clarifying questions before saving.
+3. **Google Calendar**: When a confirmed date/time event is identified, call add_calendar_event(). Wait for explicit user confirmation before calling this.
 4. **Session opening**: Follow this flow at session start:
    - Housekeeping: check in on overdue items
    - Today's priorities: highlight what's due today
    - Open invitation: "What's on your mind?"
 
-## Task Extraction Format
-When you identify a task, deadline, or action item in conversation, output a JSON block wrapped in <extract> tags:
-<extract>{"type": "deadline"|"action_item"|"priority", "title": "...", "due_date": "ISO8601 or null", "description": "optional"}</extract>
-
-When a user confirms completion of a task, output:
-<complete>{"task_title": "..."}</complete>
-
-When the user wants to add an event to Google Calendar, output:
-<calendar_add>{"title": "...", "start": "ISO8601", "end": "ISO8601 or null", "description": "optional"}</calendar_add>
-
-When the user wants a web search, output:
-<web_search>{"query": "..."}</web_search>
-
-When the user asks you to search their Gmail or emails, output:
-<gmail_search>{"query": "..."}</gmail_search>
-
-When the user asks you to search their Google Drive files or documents, output:
-<drive_search>{"query": "..."}</drive_search>
-
-For Gmail and Drive searches: emit the directive, the backend will execute the search and return results to you. Do not make up results.
+## Using Your Tools
+- When you identify a task, deadline, or action item: call **extract_task()**
+- When a user confirms completion of a task: call **complete_task()**
+- When the user wants to add an event to Google Calendar (after confirmation): call **add_calendar_event()**
+- When the user wants a web search: call **web_search()**
+- When the user asks you to search their Gmail or emails: call **search_gmail()**
+- When the user asks you to search their Google Drive files: call **search_drive()**
+- For Gmail and Drive searches: call the function, results will be returned to you automatically
 
 ## Safety Guardrails
 - Do NOT engage with, generate, or facilitate profanity, illegal activities, graphic violence, or sexual/romantic scenarios
@@ -60,12 +43,96 @@ For Gmail and Drive searches: emit the directive, the backend will execute the s
 - Draw on this knowledge naturally — like a colleague who knows your projects
 - Do not recite history unprompted; reference it when relevant
 - At session start you receive the last 14 days of emails as context — reference them when relevant
-- For older emails, use <gmail_search> to fetch them on demand when the user asks
+- For older emails, call search_gmail() when the user asks
 
 ## Identity
 - You are an AI assistant. Be transparent about this when asked.
 - Never claim to be human.
 """
+
+# Tool declarations for Gemini function calling (replaces XML tag directives)
+POCA_TOOLS = [
+    {
+        "function_declarations": [
+            {
+                "name": "extract_task",
+                "description": "Call this when you identify a task, deadline, or action item in conversation. For partial information, ask clarifying questions first.",
+                "parameters": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "type": {
+                            "type": "STRING",
+                            "enum": ["deadline", "action_item", "priority"],
+                            "description": "Type of task",
+                        },
+                        "title": {"type": "STRING", "description": "Short descriptive title"},
+                        "due_date": {"type": "STRING", "description": "ISO8601 date/datetime, or null"},
+                        "description": {"type": "STRING", "description": "Optional additional details"},
+                    },
+                    "required": ["type", "title"],
+                },
+            },
+            {
+                "name": "complete_task",
+                "description": "Call this when the user confirms a task is done.",
+                "parameters": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "task_title": {"type": "STRING", "description": "Title of the completed task"},
+                    },
+                    "required": ["task_title"],
+                },
+            },
+            {
+                "name": "add_calendar_event",
+                "description": "Call this only after the user has explicitly confirmed they want to add an event to Google Calendar.",
+                "parameters": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "title": {"type": "STRING"},
+                        "start": {"type": "STRING", "description": "ISO8601 datetime"},
+                        "end": {"type": "STRING", "description": "ISO8601 datetime or null"},
+                        "description": {"type": "STRING"},
+                    },
+                    "required": ["title", "start"],
+                },
+            },
+            {
+                "name": "web_search",
+                "description": "Trigger a web search confirmation for the user.",
+                "parameters": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "query": {"type": "STRING"},
+                    },
+                    "required": ["query"],
+                },
+            },
+            {
+                "name": "search_gmail",
+                "description": "Search the user's Gmail. Results will be returned to you automatically.",
+                "parameters": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "query": {"type": "STRING", "description": "Gmail search query"},
+                    },
+                    "required": ["query"],
+                },
+            },
+            {
+                "name": "search_drive",
+                "description": "Search the user's Google Drive. Results will be returned to you automatically.",
+                "parameters": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "query": {"type": "STRING", "description": "Search query for Drive files"},
+                    },
+                    "required": ["query"],
+                },
+            },
+        ]
+    }
+]
 
 
 def get_task_extraction_prompt(text: str) -> str:
@@ -136,57 +203,3 @@ def build_session_context(
         parts.append(f"## Relevant Past Context\n{memory_str}")
 
     return "\n\n".join(parts)
-
-
-def _synthesize_speech_sync(text: str, voice: str = "Aoede") -> tuple[bytes, str] | None:
-    """
-    Generate speech audio from text using Gemini TTS.
-    Returns (audio_bytes, mime_type) or None on failure.
-    """
-    try:
-        from google import genai as genai_new
-        from google.genai import types as gt
-
-        client = genai_new.Client(api_key=get_settings().gemini_api_key)
-        response = client.models.generate_content(
-            model="gemini-2.5-flash-preview-tts",
-            contents=text,
-            config=gt.GenerateContentConfig(
-                response_modalities=["AUDIO"],
-                speech_config=gt.SpeechConfig(
-                    voice_config=gt.VoiceConfig(
-                        prebuilt_voice_config=gt.PrebuiltVoiceConfig(voice_name=voice)
-                    )
-                ),
-            ),
-        )
-        part = response.candidates[0].content.parts[0]
-        audio_bytes = part.inline_data.data
-        mime_type = part.inline_data.mime_type or "audio/wav"
-
-        # Gemini returns raw PCM (audio/L16) — wrap it in a WAV container
-        # so browsers can play it via HTMLAudioElement
-        if "pcm" in mime_type.lower() or mime_type.startswith("audio/L16"):
-            import io, wave, re
-            rate = 24000
-            m = re.search(r"rate=(\d+)", mime_type)
-            if m:
-                rate = int(m.group(1))
-            buf = io.BytesIO()
-            with wave.open(buf, "wb") as wf:
-                wf.setnchannels(1)
-                wf.setsampwidth(2)   # 16-bit
-                wf.setframerate(rate)
-                wf.writeframes(audio_bytes)
-            audio_bytes = buf.getvalue()
-            mime_type = "audio/wav"
-
-        return audio_bytes, mime_type
-    except Exception as e:
-        print(f"[TTS] Error: {e}")
-        return None
-
-
-async def synthesize_speech(text: str, voice: str = "Aoede") -> tuple[bytes, str] | None:
-    """Async wrapper for Gemini TTS synthesis."""
-    return await asyncio.to_thread(_synthesize_speech_sync, text, voice)

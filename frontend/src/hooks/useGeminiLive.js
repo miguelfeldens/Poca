@@ -135,7 +135,8 @@ export function useGeminiLive() {
           break
         case 'text':
           setPocaTyping(false)
-          if (msg.role === 'assistant') addMessage('assistant', msg.data)
+          // Show both assistant responses and user speech transcripts
+          if (msg.role === 'assistant' || msg.role === 'user') addMessage(msg.role, msg.data)
           break
         case 'audio_response':
           playAudio(msg.data)
@@ -199,11 +200,18 @@ export function useGeminiLive() {
     wsRef.current.send(JSON.stringify({ type: 'text', data: text }))
   }, [addMessage, cancelSpeech])
 
-  const sendAudio = useCallback((base64Audio) => {
+  // Send a PCM16 audio chunk (base64) from the microphone to the backend
+  const sendAudioChunk = useCallback((base64pcm) => {
+    if (wsRef.current?.readyState !== WebSocket.OPEN) return
+    wsRef.current.send(JSON.stringify({ type: 'audio_chunk', data: base64pcm }))
+  }, [])
+
+  // Signal end of user speech turn so Gemini knows to respond
+  const sendAudioEnd = useCallback(() => {
     if (wsRef.current?.readyState !== WebSocket.OPEN) return
     cancelSpeech()
     setPocaTyping(true)
-    wsRef.current.send(JSON.stringify({ type: 'audio', data: base64Audio }))
+    wsRef.current.send(JSON.stringify({ type: 'audio_end' }))
   }, [cancelSpeech])
 
   useEffect(() => {
@@ -213,5 +221,5 @@ export function useGeminiLive() {
     }
   }, [])
 
-  return { messages, connected, pocaTyping, pocaSpeaking, connect, disconnect, sendText, sendAudio, cancelSpeech, initAudio }
+  return { messages, connected, pocaTyping, pocaSpeaking, connect, disconnect, sendText, sendAudioChunk, sendAudioEnd, cancelSpeech, initAudio }
 }

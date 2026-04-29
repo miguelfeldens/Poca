@@ -8,7 +8,7 @@ import { Power, Keyboard, LogOut } from 'lucide-react'
 
 export default function ConversationPanel() {
   const { user, logout } = useAuth()
-  const { messages, connected, pocaTyping, pocaSpeaking, connect, disconnect, sendText, sendAudio, cancelSpeech, initAudio } = useGeminiLive()
+  const { messages, connected, pocaTyping, pocaSpeaking, connect, disconnect, sendText, sendAudioChunk, sendAudioEnd, cancelSpeech, initAudio } = useGeminiLive()
   const [showText, setShowText] = useState(false)
   const [sessionStarted, setSessionStarted] = useState(false)
   const voiceRef = useRef(null)
@@ -17,10 +17,6 @@ export default function ConversationPanel() {
   useEffect(() => {
     return () => { disconnect() }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
-
-  const handleTranscript = useCallback((text) => {
-    sendText(text)
-  }, [sendText])
 
   // Start session: this click IS the user gesture that unlocks browser audio
   const handleStartSession = useCallback(() => {
@@ -87,8 +83,8 @@ export default function ConversationPanel() {
         ) : (
           <VoiceButton
             ref={voiceRef}
-            onTranscript={handleTranscript}
-            onAudioChunk={sendAudio}
+            onChunk={sendAudioChunk}
+            onEnd={sendAudioEnd}
             onStartListening={cancelSpeech}
             disabled={micDisabled}
             speaking={pocaSpeaking}

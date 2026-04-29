@@ -2,10 +2,13 @@ import { forwardRef, useImperativeHandle, useCallback } from 'react'
 import { Mic, MicOff } from 'lucide-react'
 import { useVoiceInput } from '../../hooks/useVoiceInput.js'
 
-const VoiceButton = forwardRef(function VoiceButton({ onTranscript, onAudioChunk, onStartListening, disabled, speaking }, ref) {
-  const { listening, supported, toggleListening, startListening, stopListening } = useVoiceInput({
-    onTranscript,
-    onAudioChunk,
+const VoiceButton = forwardRef(function VoiceButton(
+  { onChunk, onEnd, onStartListening, disabled, speaking },
+  ref
+) {
+  const { listening, supported, startListening, stopListening } = useVoiceInput({
+    onChunk,
+    onEnd,
   })
 
   const handleStart = useCallback(() => {
@@ -21,6 +24,14 @@ const VoiceButton = forwardRef(function VoiceButton({ onTranscript, onAudioChunk
       <span className="orb-label">Voice unavailable</span>
     </div>
   )
+
+  const label = speaking
+    ? 'POCA is speaking…'
+    : disabled
+    ? 'POCA is thinking…'
+    : listening
+    ? 'Listening…'
+    : 'Tap to speak'
 
   return (
     <button
@@ -38,7 +49,7 @@ const VoiceButton = forwardRef(function VoiceButton({ onTranscript, onAudioChunk
           <span className="orb-ring ring-3" />
         </>
       )}
-      <span className="orb-label">{speaking ? 'POCA is speaking…' : disabled ? 'POCA is thinking…' : listening ? 'Listening…' : 'Tap to speak'}</span>
+      <span className="orb-label">{label}</span>
     </button>
   )
 })
