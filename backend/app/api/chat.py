@@ -47,9 +47,32 @@ settings = get_settings()
 
 OPENING_PROMPT = (
     "Begin the session. Follow the opening sequence: "
-    "housekeeping (overdue items), today's priorities, then open invitation. "
-    "Keep it concise — this is spoken aloud."
+    "housekeeping (overdue items), today's agenda, then open invitation. "
+    "Keep it concise -- this is spoken aloud."
 )
+
+
+async def _generate_priorities(session_context: str) -> list[str]:
+    """Generate 3 AI-proposed priorities from session context using a fast text model."""
+    from google import genai
+    client = genai.Client(api_key=settings.gemini_api_key)
+    response = await client.aio.models.generate_content(
+        model="gemini-2.0-flash",
+        contents=(
+            "Based on the following user context (calendar events, emails, tasks), "
+            "propose exactly 3 short priorities (max 10 words each) for the user today. "
+            "Focus on what matters most this week. "
+            "Return ONLY a JSON array of 3 strings, no other text.\n\n"
+            f"{session_context}"
+        ),
+    )
+    text = response.text.strip()
+    # Parse JSON array from response
+    if text.startswith("```"):
+        text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+    import json as _json
+    priorities = _json.loads(text)
+    return [str(p) for p in priorities[:3]]
 
 
 def _pcm_to_wav(pcm_bytes: bytes, rate: int = 24000) -> bytes:
@@ -177,10 +200,17 @@ def _fetch_drive_results_sync(user: "User", query: str) -> str:
 
 
 async def _get_session_opening_context(
-    db: AsyncSession, user_id: str, local_datetime: str = None, user: "User" = None
+    db: AsyncSession, user_id: str, local_datetime: str = None,
+    user: "User" = None, tz_offset_min: int = None,
 ) -> str:
     now = datetime.now(timezone.utc)
-    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    # Compute "today" boundaries in the user's local timezone
+    # JS getTimezoneOffset() returns positive for west of UTC (e.g. 420 for PDT/UTC-7)
+    offset = timedelta(minutes=-(tz_offset_min or 0))
+    user_now = now + offset  # user's local clock (as naive-ish UTC datetime)
+    user_midnight = user_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_start = user_midnight - offset  # convert back to UTC
     today_end = today_start + timedelta(days=1)
 
     overdue_result = await db.execute(
@@ -210,7 +240,8 @@ async def _get_session_opening_context(
     )
     context_docs = [{"title": c.title, "content_text": c.content_text} for c in ctx_result.scalars().all()]
 
-    week_start = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+    user_week_start = (user_now - timedelta(days=user_now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+    week_start = user_week_start - offset  # back to UTC
     session_result = await db.execute(
         select(Session).where(and_(Session.user_id == user_id, Session.session_start >= week_start)).limit(1)
     )
@@ -284,6 +315,7 @@ async def _handle_tool_call(
     """Dispatch a Gemini function call to the appropriate handler."""
     name = fc.name
     args = dict(fc.args) if fc.args else {}
+    print(f"[tool_call] {name} args={args}", flush=True)
 
     if name == "extract_task":
         saved = await _save_extracted_task(db, user_id, session_id, args)
@@ -319,6 +351,11 @@ async def _handle_tool_call(
             results = "Drive access not available."
         return {"results": results}
 
+    elif name == "set_priorities":
+        priorities = args.get("priorities", [])[:3]
+        await websocket.send_json({"type": "priorities_update", "priorities": priorities})
+        return {"set": True}
+
     return {}
 
 
@@ -328,6 +365,7 @@ async def chat_websocket(
     session_id: str,
     token: str = Query(...),
     local_datetime: Optional[str] = Query(None),
+    tz_offset: Optional[int] = Query(None),
 ):
     """WebSocket endpoint — proxies to Gemini Live API for true speech-to-speech."""
     user_id = decode_token(token)
@@ -350,12 +388,20 @@ async def chat_websocket(
             user_result = await db.execute(select(User).where(User.id == user_id))
             current_user = user_result.scalar_one_or_none()
 
-            opening_context = await _get_session_opening_context(db, user_id, local_datetime, user=current_user)
+            opening_context = await _get_session_opening_context(db, user_id, local_datetime, user=current_user, tz_offset_min=tz_offset)
             full_system_prompt = POCA_SYSTEM_PROMPT
             if opening_context:
                 full_system_prompt += f"\n\n## Current Session Context\n{opening_context}"
 
             await websocket.send_json({"type": "session_started", "session_id": session_id})
+
+            # Generate AI priorities from calendar/emails using a quick text model call
+            try:
+                priorities = await _generate_priorities(opening_context)
+                if priorities:
+                    await websocket.send_json({"type": "priorities_update", "priorities": priorities})
+            except Exception as e:
+                print(f"[chat] priorities generation failed: {e}", flush=True)
 
             voice = (current_user.voice_preference if current_user and current_user.voice_preference else "Aoede")
 
@@ -384,14 +430,23 @@ async def chat_websocket(
                 config=live_config,
             ) as live:
                 # Kick off the session opening sequence
-                await live.send(input=OPENING_PROMPT, end_of_turn=True)
+                await live.send_client_content(
+                    turns={"parts": [{"text": OPENING_PROMPT}]},
+                    turn_complete=True,
+                )
 
                 t1 = asyncio.create_task(_frontend_to_live(websocket, live))
                 t2 = asyncio.create_task(
                     _live_to_frontend(websocket, live, db, session_id, user_id, current_user)
                 )
                 try:
-                    await asyncio.gather(t1, t2)
+                    # When either task finishes, cancel the other immediately
+                    done, pending = await asyncio.wait(
+                        {t1, t2}, return_when=asyncio.FIRST_COMPLETED
+                    )
+                    for t in pending:
+                        t.cancel()
+                    await asyncio.gather(*pending, return_exceptions=True)
                 finally:
                     t1.cancel()
                     t2.cancel()
@@ -400,11 +455,16 @@ async def chat_websocket(
         except WebSocketDisconnect:
             pass
         except Exception as e:
-            print(f"[chat] Error: {e}")
-            try:
-                await websocket.send_json({"type": "error", "message": str(e)})
-            except Exception:
-                pass
+            err_str = str(e)
+            # 1007/1008 during teardown are expected when closing the Live session
+            if "1007" in err_str or "1008" in err_str:
+                print(f"[chat] Gemini session closed: {err_str}", flush=True)
+            else:
+                print(f"[chat] Error: {err_str}", flush=True)
+                try:
+                    await websocket.send_json({"type": "error", "message": err_str})
+                except Exception:
+                    pass
         finally:
             try:
                 await db.commit()
@@ -434,21 +494,22 @@ async def _frontend_to_live(websocket: WebSocket, live) -> None:
             if msg_type == "audio_chunk":
                 pcm_bytes = base64.b64decode(msg.get("data", ""))
                 if pcm_bytes:
-                    await live.send(
-                        input=gt.LiveClientRealtimeInput(
-                            audio=gt.Blob(data=pcm_bytes, mime_type="audio/pcm;rate=16000")
-                        )
+                    await live.send_realtime_input(
+                        audio=gt.Blob(data=pcm_bytes, mime_type="audio/pcm;rate=16000")
                     )
 
             elif msg_type == "audio_end":
-                await live.send(
-                    input=gt.LiveClientRealtimeInput(activity_end=gt.ActivityEnd())
-                )
+                # VAD is automatic — just stop sending audio, Gemini detects silence
+                print("[f2l] audio_end (VAD handles turn detection)", flush=True)
 
             elif msg_type == "text":
                 user_text = msg.get("data", "").strip()
                 if user_text:
-                    await live.send(input=user_text, end_of_turn=True)
+                    print(f"[f2l] text: {user_text[:60]}", flush=True)
+                    await live.send_client_content(
+                        turns={"parts": [{"text": user_text}]},
+                        turn_complete=True,
+                    )
 
             elif msg_type == "end_turn":
                 break
@@ -456,7 +517,9 @@ async def _frontend_to_live(websocket: WebSocket, live) -> None:
     except WebSocketDisconnect:
         pass
     except Exception as e:
-        print(f"[frontend_to_live] Error: {e}")
+        import traceback
+        print(f"[frontend_to_live] Error: {e}", flush=True)
+        traceback.print_exc()
 
 
 async def _live_to_frontend(
@@ -471,69 +534,85 @@ async def _live_to_frontend(
     from google.genai import types as gt
 
     accumulated_output_text = ""
+    accumulated_input_text = ""
 
     try:
         while True:
             async for response in live.receive():
                 sc = response.server_content
 
-            if sc:
-                # Streaming audio chunks from POCA
-                if sc.model_turn:
-                    for part in sc.model_turn.parts:
-                        if part.inline_data and part.inline_data.data:
-                            wav = _pcm_to_wav(part.inline_data.data)
+                if sc:
+                    # Streaming audio chunks from POCA
+                    if sc.model_turn:
+                        for part in sc.model_turn.parts:
+                            if part.inline_data and part.inline_data.data:
+                                wav = _pcm_to_wav(part.inline_data.data)
+                                await websocket.send_json({
+                                    "type": "audio_response",
+                                    "data": base64.b64encode(wav).decode(),
+                                    "mime_type": "audio/wav",
+                                })
+
+                    # POCA's spoken words as text (output transcription)
+                    if sc.output_transcription:
+                        text = getattr(sc.output_transcription, "text", "") or ""
+                        if text:
+                            accumulated_output_text += text
+
+                    # User's spoken words as text (input transcription) — accumulate
+                    if sc.input_transcription:
+                        user_text = getattr(sc.input_transcription, "text", "") or ""
+                        if user_text:
+                            accumulated_input_text += user_text
+
+                    # Turn complete — flush accumulated transcripts to frontend
+                    if sc.turn_complete:
+                        print("[l2f] turn_complete received", flush=True)
+                        # Flush user speech transcript
+                        if accumulated_input_text:
                             await websocket.send_json({
-                                "type": "audio_response",
-                                "data": base64.b64encode(wav).decode(),
-                                "mime_type": "audio/wav",
+                                "type": "text",
+                                "data": accumulated_input_text.strip(),
+                                "role": "user",
                             })
+                            await store_message(db, session_id, user_id, "user", accumulated_input_text.strip())
+                            await db.commit()
+                            accumulated_input_text = ""
+                        # Flush assistant speech transcript
+                        if accumulated_output_text:
+                            await websocket.send_json({
+                                "type": "text",
+                                "data": accumulated_output_text,
+                                "role": "assistant",
+                            })
+                            await store_message(db, session_id, user_id, "assistant", accumulated_output_text)
+                            await db.commit()
+                            accumulated_output_text = ""
+                        # Always signal turn end so frontend clears the typing/thinking state
+                        await websocket.send_json({"type": "turn_complete"})
 
-                # POCA's spoken words as text (output transcription)
-                if sc.output_transcription:
-                    text = getattr(sc.output_transcription, "text", "") or ""
-                    if text:
-                        accumulated_output_text += text
+                # Function calls (directives)
+                if response.tool_call:
+                    tool_responses = []
+                    for fc in response.tool_call.function_calls:
+                        result = await _handle_tool_call(fc, db, session_id, user_id, websocket, current_user)
+                        tool_responses.append(
+                            gt.FunctionResponse(name=fc.name, id=fc.id, response=result)
+                        )
+                    await live.send_tool_response(function_responses=tool_responses)
 
-                # User's spoken words as text (input transcription)
-                if sc.input_transcription:
-                    user_text = getattr(sc.input_transcription, "text", "") or ""
-                    if user_text:
-                        await websocket.send_json({"type": "text", "data": user_text, "role": "user"})
-                        await store_message(db, session_id, user_id, "user", user_text)
-                        await db.commit()
-
-                # Turn complete — flush accumulated transcript to frontend
-                if sc.turn_complete:
-                    if accumulated_output_text:
-                        await websocket.send_json({
-                            "type": "text",
-                            "data": accumulated_output_text,
-                            "role": "assistant",
-                        })
-                        await store_message(db, session_id, user_id, "assistant", accumulated_output_text)
-                        await db.commit()
-                        accumulated_output_text = ""
-                    # Always signal turn end so frontend clears the typing/thinking state
-                    await websocket.send_json({"type": "turn_complete"})
-
-            # Function calls (directives)
-            if response.tool_call:
-                tool_responses = []
-                for fc in response.tool_call.function_calls:
-                    result = await _handle_tool_call(fc, db, session_id, user_id, websocket, current_user)
-                    tool_responses.append(
-                        gt.FunctionResponse(name=fc.name, id=fc.id, response=result)
-                    )
-                await live.send(
-                    input=gt.LiveClientToolResponse(function_responses=tool_responses)
-                )
-
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, asyncio.CancelledError):
         pass
     except Exception as e:
-        print(f"[live_to_frontend] Error: {e}")
+        import traceback
+        err_str = str(e)
+        print(f"[live_to_frontend] Error: {err_str}", flush=True)
+        traceback.print_exc()
         try:
-            await websocket.send_json({"type": "error", "message": str(e)})
+            # 1007/1008 during teardown — session closing, not a real error
+            if "1007" in err_str or "1008" in err_str:
+                pass
+            else:
+                await websocket.send_json({"type": "error", "message": err_str})
         except Exception:
             pass

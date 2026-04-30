@@ -26,6 +26,7 @@ class CalendarEventOut(BaseModel):
     end: Optional[datetime] = None
     description: Optional[str] = None
     all_day: bool = False
+    html_link: Optional[str] = None
 
 
 async def get_calendar_service(user: User):
@@ -93,6 +94,7 @@ async def list_calendar_events(
             end=end_dt,
             description=item.get("description"),
             all_day=all_day,
+            html_link=item.get("htmlLink"),
         ))
 
     return events

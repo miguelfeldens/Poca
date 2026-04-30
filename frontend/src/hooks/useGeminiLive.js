@@ -8,7 +8,7 @@ const WS_BASE = import.meta.env.VITE_WS_URL || 'ws://localhost:8000'
 
 export function useGeminiLive() {
   const { user } = useAuth()
-  const { sessionId, setSessionId, updateTasks, markTaskComplete, setPendingCalendarEvent, setPendingSearch } = useApp()
+  const { sessionId, setSessionId, updateTasks, markTaskComplete, setPendingCalendarEvent, setPendingSearch, setAiPriorities } = useApp()
 
   const [messages, setMessages] = useState([])
   const [connected, setConnected] = useState(false)
@@ -118,7 +118,8 @@ export function useGeminiLive() {
       weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
       hour: 'numeric', minute: '2-digit', timeZoneName: 'short',
     }))
-    const ws = new WebSocket(`${WS_BASE}/ws/chat/${sid}?token=${token}&local_datetime=${localDt}`)
+    const tzOffset = new Date().getTimezoneOffset()  // minutes, e.g. 420 for PDT (UTC-7)
+    const ws = new WebSocket(`${WS_BASE}/ws/chat/${sid}?token=${token}&local_datetime=${localDt}&tz_offset=${tzOffset}`)
     wsRef.current = ws
 
     ws.onopen = () => {
@@ -157,6 +158,15 @@ export function useGeminiLive() {
           break
         case 'search_confirm':
           setPendingSearch(msg.query)
+          break
+        case 'priorities_update':
+          if (msg.priorities) setAiPriorities(msg.priorities)
+          break
+        case 'session_expired':
+          console.log('[ws] session expired, reconnecting...')
+          addMessage('system', 'Session expired — reconnecting...')
+          sessionIdRef.current = null
+          setTimeout(() => connect(), 1000)
           break
         case 'error':
           addMessage('system', `Error: ${msg.message}`)
@@ -203,17 +213,28 @@ export function useGeminiLive() {
   }, [addMessage, cancelSpeech])
 
   // Send a PCM16 audio chunk (base64) from the microphone to the backend
+  const sendAudioChunkCount = useRef(0)
   const sendAudioChunk = useCallback((base64pcm) => {
-    if (wsRef.current?.readyState !== WebSocket.OPEN) return
+    if (wsRef.current?.readyState !== WebSocket.OPEN) {
+      console.warn('[ws] audio_chunk skipped — ws not open, state:', wsRef.current?.readyState)
+      return
+    }
+    sendAudioChunkCount.current++
+    if (sendAudioChunkCount.current <= 3 || sendAudioChunkCount.current % 10 === 0) {
+      console.log(`[ws] sending audio_chunk #${sendAudioChunkCount.current}, ${base64pcm.length} chars`)
+    }
     wsRef.current.send(JSON.stringify({ type: 'audio_chunk', data: base64pcm }))
   }, [])
 
   // Signal end of user speech turn so Gemini knows to respond
   const sendAudioEnd = useCallback(() => {
+    console.log(`[ws] sendAudioEnd called, ws state:`, wsRef.current?.readyState, `chunks sent:`, sendAudioChunkCount.current)
+    sendAudioChunkCount.current = 0
     if (wsRef.current?.readyState !== WebSocket.OPEN) return
     cancelSpeech()
     setPocaTyping(true)
     wsRef.current.send(JSON.stringify({ type: 'audio_end' }))
+    console.log('[ws] audio_end sent')
   }, [cancelSpeech])
 
   useEffect(() => {

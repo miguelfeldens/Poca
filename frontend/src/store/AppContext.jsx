@@ -9,6 +9,7 @@ export function AppProvider({ children }) {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [pendingCalendarEvent, setPendingCalendarEvent] = useState(null)
   const [pendingSearch, setPendingSearch] = useState(null)
+  const [aiPriorities, setAiPriorities] = useState([])
 
   const addTask = useCallback((task) => {
     setTasks(prev => {
@@ -41,6 +42,7 @@ export function AppProvider({ children }) {
       settingsOpen, setSettingsOpen,
       pendingCalendarEvent, setPendingCalendarEvent,
       pendingSearch, setPendingSearch,
+      aiPriorities, setAiPriorities,
     }}>
       {children}
     </AppContext.Provider>

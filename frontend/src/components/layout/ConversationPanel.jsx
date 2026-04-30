@@ -65,7 +65,7 @@ export default function ConversationPanel() {
       </div>
 
       {/* Messages */}
-      <MessageList messages={messages} typing={pocaTyping} />
+      <MessageList messages={messages} typing={pocaTyping} sessionStarted={sessionStarted} />
 
       {/* Voice-first input area */}
       <div className="voice-input-area">

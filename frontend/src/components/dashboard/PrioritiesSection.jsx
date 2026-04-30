@@ -1,4 +1,3 @@
-import TaskItem from './TaskItem.jsx'
 import { Target } from 'lucide-react'
 
 export default function PrioritiesSection({ items }) {
@@ -6,15 +5,16 @@ export default function PrioritiesSection({ items }) {
     <section className="dashboard-section">
       <div className="section-header">
         <Target size={16} />
-        <h3>Top Priorities</h3>
-        {items.length > 0 && <span className="badge">{items.length}</span>}
+        <h3>AI Priorities</h3>
       </div>
       {items.length === 0 ? (
-        <p className="empty-state">No active priorities</p>
+        <p className="empty-state">Priorities appear when you start a session</p>
       ) : (
-        <ul className="task-list">
-          {items.map(task => <TaskItem key={task.id} task={task} />)}
-        </ul>
+        <ol className="priorities-list">
+          {items.map((text, i) => (
+            <li key={i} className="priority-item">{text}</li>
+          ))}
+        </ol>
       )}
     </section>
   )

@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import MessageBubble from './MessageBubble.jsx'
 
-export default function MessageList({ messages, typing }) {
+export default function MessageList({ messages, typing, sessionStarted }) {
   const bottomRef = useRef(null)
 
   useEffect(() => {
@@ -10,10 +10,10 @@ export default function MessageList({ messages, typing }) {
 
   return (
     <div className="message-list">
-      {messages.length === 0 && (
+      {messages.length === 0 && !sessionStarted && (
         <div className="welcome-placeholder">
           <div className="poca-avatar">P</div>
-          <p>Connecting to POCA…</p>
+          <p>Your AI productivity assistant</p>
         </div>
       )}
       {messages.map(msg => (

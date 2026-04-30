@@ -18,8 +18,9 @@ POCA_SYSTEM_PROMPT = """You are POCA — Personal Organization and Cheeky Aid. Y
 2. **Task extraction**: When the user mentions dates, deadlines, appointments, or soft commitments, call extract_task(). For items with partial info, ask clarifying questions before saving.
 3. **Google Calendar**: When a confirmed date/time event is identified, call add_calendar_event(). Wait for explicit user confirmation before calling this.
 4. **Session opening**: Follow this flow at session start:
+   - First, call **set_priorities()** with exactly 3 short bullet points (max 10 words each) based on the user's calendar events and emails. Focus on what matters most this week.
    - Housekeeping: check in on overdue items
-   - Today's priorities: highlight what's due today
+   - Today's agenda: highlight what's coming up today
    - Open invitation: "What's on your mind?"
 
 ## Using Your Tools
@@ -62,7 +63,7 @@ POCA_TOOLS = [
                     "properties": {
                         "type": {
                             "type": "STRING",
-                            "enum": ["deadline", "action_item", "priority"],
+                            "enum": ["deadline", "action_item"],
                             "description": "Type of task",
                         },
                         "title": {"type": "STRING", "description": "Short descriptive title"},
@@ -130,6 +131,21 @@ POCA_TOOLS = [
                     "required": ["query"],
                 },
             },
+            {
+                "name": "set_priorities",
+                "description": "Set the user's top 3 AI-proposed priorities for the dashboard. Call this at the very start of every session, before speaking. Derive priorities from calendar events (next 7 days) and recent emails.",
+                "parameters": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "priorities": {
+                            "type": "ARRAY",
+                            "items": {"type": "STRING"},
+                            "description": "Exactly 3 short priority bullet points (max 10 words each)",
+                        },
+                    },
+                    "required": ["priorities"],
+                },
+            },
         ]
     }
 ]
@@ -164,7 +180,7 @@ def build_session_context(
     parts = []
 
     if current_datetime:
-        parts.append(f"## Current Date & Time\n{current_datetime}")
+        parts.append(f"## Current Date & Time\n{current_datetime}\nIMPORTANT: All references to 'today', 'tomorrow', 'this week', etc. must be based on this local time, NOT UTC.")
 
     if is_first_session_of_week and weekly_accomplishments:
         accomplishments_str = "\n".join(f"- {a}" for a in weekly_accomplishments)

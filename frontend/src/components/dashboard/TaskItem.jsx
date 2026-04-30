@@ -6,7 +6,7 @@ import { formatDueDate, isOverdue } from '../../utils/formatters.js'
 import { playCelebration } from '../../utils/sounds.js'
 import api from '../../services/api.js'
 
-export default function TaskItem({ task, overdue }) {
+export default function TaskItem({ task, overdue, urgency }) {
   const { removeTask, markTaskComplete } = useApp()
   const { user } = useAuth()
   const [confirming, setConfirming] = useState(false)
@@ -42,6 +42,7 @@ export default function TaskItem({ task, overdue }) {
 
   return (
     <li className={`task-item ${overdueFlag ? 'overdue' : ''}`}>
+      {urgency && <span className={`urgency-dot urgency-${urgency}`} />}
       <button className="task-complete-btn" onClick={handleComplete} aria-label="Mark complete">
         <Check size={14} />
       </button>

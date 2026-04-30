@@ -738,6 +738,30 @@ body {
   padding: 4px 0;
 }
 
+/* ===== AI Priorities ===== */
+.priorities-list {
+  list-style: none;
+  counter-reset: priority;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0;
+}
+
+.priority-item {
+  counter-increment: priority;
+  font-size: 13px;
+  padding: 4px 8px;
+  line-height: 1.4;
+}
+
+.priority-item::before {
+  content: counter(priority) ".";
+  font-weight: 600;
+  color: var(--accent);
+  margin-right: 6px;
+}
+
 /* ===== Task List ===== */
 .task-list {
   list-style: none;
@@ -801,6 +825,16 @@ body {
 
 .task-due.overdue-label { color: var(--danger); }
 
+.urgency-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.urgency-future { background: var(--success); }
+.urgency-today { background: var(--warning); }
+.urgency-overdue { background: var(--danger); }
+
 .task-delete-btn {
   opacity: 0;
   transition: all 0.15s;
@@ -810,26 +844,79 @@ body {
 
 /* ===== Calendar Events ===== */
 .event-list {
-  list-style: none;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+}
+
+.event-date-group {
+  padding: 0;
+}
+
+.date-divider {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 6px 0;
+}
+
+.date-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 8px 2px;
+}
+
+.date-events {
+  list-style: none;
+  padding: 0;
 }
 
 .event-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 8px;
   border-radius: var(--radius-sm);
-  padding: 6px 8px;
 }
 
 .event-time {
   font-size: 11px;
   color: var(--accent);
   font-weight: 500;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .event-title {
   font-size: 13px;
-  margin-top: 1px;
+}
+
+.event-link {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  text-decoration: none;
+  color: inherit;
+  border-radius: var(--radius-sm);
+  transition: background 0.15s;
+}
+
+.event-link:hover {
+  background: var(--bg-elevated);
+}
+
+.event-link .link-icon {
+  display: inline-block;
+  margin-left: 4px;
+  opacity: 0;
+  vertical-align: middle;
+  transition: opacity 0.15s;
+}
+
+.event-link:hover .link-icon {
+  opacity: 0.5;
 }
 
 /* ===== Modals ===== */
